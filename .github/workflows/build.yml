@@ -1,4 +1,4 @@
-name: Build APKs
+name: CI / Release
 
 on:
   push:
@@ -11,8 +11,13 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    name: Build & upload APKs
+  # ----------------------------------------------------------------------------
+  # ci: fast feedback on every push and PR.
+  # Builds the debug APK (auto-signed with the debug keystore) and uploads it
+  # as a workflow artifact.
+  # ----------------------------------------------------------------------------
+  ci:
+    name: Build debug APK
     runs-on: ubuntu-latest
 
     steps:
@@ -30,17 +35,9 @@ jobs:
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: "8.6"
-          cache-read-only: false
 
-      - name: Build debug APK (auto-signed with debug keystore)
+      - name: Build debug APK
         run: gradle :app:assembleDebug
-
-      - name: Build release APK (unsigned)
-        run: gradle :app:assembleRelease
-
-      # -----------------------------------------------------------------------
-      # Upload artifacts
-      # -----------------------------------------------------------------------
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -49,48 +46,89 @@ jobs:
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
 
-      - name: Upload release APK (unsigned)
-        uses: actions/upload-artifact@v4
-        with:
-          name: ssh-fs-provider-release-unsigned-${{ github.sha }}
-          path: app/build/outputs/apk/release/app-release-unsigned.apk
-          retention-days: 14
+  # ----------------------------------------------------------------------------
+  # release: runs on main only.
+  #
+  # Uses semantic-release to:
+  #   1. Analyse conventional commits since the last tag.
+  #   2. Determine the next semver version (patch / minor / major).
+  #   3. Write version.properties so Gradle stamps the APK correctly.
+  #   4. Build the release APK (signed if SIGNING_KEY secret is set).
+  #   5. Create a GitHub Release with the APK attached as an asset.
+  #   6. Commit CHANGELOG.md back to main.
+  #
+  # Commit message conventions (Conventional Commits):
+  #   fix: …          → patch bump   (1.0.0 → 1.0.1)
+  #   feat: …         → minor bump   (1.0.0 → 1.1.0)
+  #   feat!: … or
+  #   BREAKING CHANGE → major bump   (1.0.0 → 2.0.0)
+  #   chore:, docs:,
+  #   style:, refactor:,
+  #   perf:, test:    → no release
+  # ----------------------------------------------------------------------------
+  release:
+    name: Release
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
 
-      # -----------------------------------------------------------------------
-      # Optional: sign the release APK when signing secrets are present.
-      #
-      # To enable:
-      #   1. Generate a keystore:
-      #        keytool -genkey -v -keystore release.jks -alias release \
-      #          -keyalg RSA -keysize 4096 -validity 10000
-      #   2. Base64-encode it:
-      #        base64 -w0 release.jks > release.jks.b64
-      #   3. Add these repository secrets in GitHub → Settings → Secrets:
-      #        SIGNING_KEY            = contents of release.jks.b64
-      #        SIGNING_KEY_ALIAS      = release
-      #        SIGNING_KEY_PASSWORD   = <key password>
-      #        SIGNING_STORE_PASSWORD = <keystore password>
-      # -----------------------------------------------------------------------
+    permissions:
+      contents: write       # create releases, push changelog commit
+      issues: write         # comment on released issues
+      pull-requests: write  # comment on released PRs
 
-      - name: Sign release APK
-        if: |
-          github.event_name != 'pull_request' &&
-          secrets.SIGNING_KEY != ''
-        uses: r0adkll/sign-android-release@v1
-        id: sign
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
         with:
-          releaseDirectory: app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
-          alias: ${{ secrets.SIGNING_KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.SIGNING_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          # semantic-release needs the full commit history to find the
+          # previous release tag and analyse all commits since then.
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.6"
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install semantic-release and plugins
+        run: npm clean-install
+
+      # Decode the base64-encoded keystore so Gradle can sign the APK.
+      # If the secret is absent, the release APK is left unsigned.
+      - name: Decode signing key
+        if: ${{ env.SIGNING_KEY != '' }}
+        run: |
+          echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/release.jks"
+          echo "SIGNING_KEY_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
         env:
-          BUILD_TOOLS_VERSION: "34.0.0"
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
 
-      - name: Upload signed release APK
-        if: steps.sign.outcome == 'success'
-        uses: actions/upload-artifact@v4
-        with:
-          name: ssh-fs-provider-release-signed-${{ github.sha }}
-          path: ${{ steps.sign.outputs.signedReleaseFile }}
-          retention-days: 90
+      # semantic-release lifecycle:
+      #   prepare  → scripts/prepare-release.sh (writes version.properties,
+      #              runs gradle assembleRelease, renames APK)
+      #   publish  → creates GitHub Release with the APK as an asset
+      #   success  → @semantic-release/git commits CHANGELOG.md to main
+      - name: Run semantic-release
+        run: npx semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+
+      # Always remove the keystore file from the runner, even on failure.
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"

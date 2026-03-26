@@ -1,0 +1,13 @@
+{
+  "name": "ssh-fs-provider",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Release tooling for SSH FS Provider Android app",
+  "devDependencies": {
+    "semantic-release": "^24.0.0",
+    "@semantic-release/changelog": "^6.0.3",
+    "@semantic-release/exec": "^6.0.3",
+    "@semantic-release/git": "^10.0.1",
+    "@semantic-release/github": "^10.0.3"
+  }
+}
