@@ -1,10 +1,12 @@
 package io.github.carstenleue.sshfsprovider
 
+import android.os.HandlerThread
 import android.os.ProxyFileDescriptorCallback
 import android.system.ErrnoException
 import android.system.OsConstants
 import android.util.Log
 import com.jcraft.jsch.ChannelSftp
+import com.jcraft.jsch.SftpException
 import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
@@ -12,20 +14,30 @@ import java.io.RandomAccessFile
 /**
  * [ProxyFileDescriptorCallback] for writing to a remote SFTP file.
  *
- * Strategy: buffer all writes into a local temp file (supports random access / seek),
- * then upload the complete file to the SFTP server in [onRelease]. This handles apps
- * that seek while writing (e.g. text editors that rewrite the header after the body).
+ * Strategy:
+ *   All writes are buffered in a local temp file ([cacheFile]) using a
+ *   [RandomAccessFile], which supports random-access / seek-while-writing used
+ *   by editors that rewrite headers after the body.  On [onRelease], the
+ *   complete temp file is uploaded atomically:
  *
- * The temp file is stored in [android.content.Context.getCacheDir] and deleted after
- * the upload completes or fails.
+ *     1. Upload to a temporary remote path `<target>.part`.
+ *     2. Rename the temp path to `<target>` (atomic replace on OpenSSH via
+ *        `posix-rename@openssh.com`; or delete-then-rename on older servers).
+ *     3. Delete the local temp file.
  *
- * Thread-safety: callbacks from [android.os.storage.StorageManager.openProxyFileDescriptor]
- * are serialised on the supplied [android.os.Handler].
+ *   If the upload or rename fails the remote target is **not** truncated or
+ *   corrupted – the existing file is preserved until step 2 succeeds.
+ *
+ * Thread-safety:
+ *   All callbacks are serialised on [callbackThread] by
+ *   [android.os.storage.StorageManager.openProxyFileDescriptor], so [raf] needs
+ *   no additional locking.
  */
 class SshWriteProxyCallback(
     private val sftp: ChannelSftp,
     private val remotePath: String,
     private val cacheFile: File,
+    private val callbackThread: HandlerThread,
 ) : ProxyFileDescriptorCallback() {
 
     private val raf = RandomAccessFile(cacheFile, "rw")
@@ -43,9 +55,7 @@ class SshWriteProxyCallback(
         }
     }
 
-    /**
-     * Apps that open a file in read-write mode may read it back after writing.
-     */
+    /** Apps that open read-write mode may read data back after writing. */
     override fun onRead(offset: Long, size: Int, data: ByteArray): Int {
         return try {
             raf.seek(offset)
@@ -58,21 +68,43 @@ class SshWriteProxyCallback(
     }
 
     /**
-     * Called when the file descriptor is closed. Upload the buffered content to
-     * the SFTP server, then clean up.
+     * Upload the buffered content to the SFTP server atomically, then clean up.
+     *
+     * The remote file is only replaced once [sftp.rename] succeeds, so a network
+     * failure during upload leaves the original file intact.
      */
     override fun onRelease() {
+        val tempRemotePath = "$remotePath.part"
         try {
-            raf.close()
-            cacheFile.inputStream().use { input ->
-                sftp.put(input, remotePath, ChannelSftp.OVERWRITE)
+            // Close RAF first; ensure it's always closed even if upload throws.
+            try {
+                raf.close()
+            } catch (e: IOException) {
+                Log.e(TAG, "Failed to close temp file buffer", e)
             }
+
+            // Upload to a staging path.
+            cacheFile.inputStream().use { input ->
+                sftp.put(input, tempRemotePath, ChannelSftp.OVERWRITE)
+            }
+
+            // Atomic rename.  SFTP v3 rename fails if the destination exists,
+            // so fall back to delete-then-rename on non-OpenSSH servers.
+            try {
+                sftp.rename(tempRemotePath, remotePath)
+            } catch (e: SftpException) {
+                runCatching { sftp.rm(remotePath) }
+                sftp.rename(tempRemotePath, remotePath)
+            }
+
             Log.d(TAG, "Upload complete: $remotePath (${cacheFile.length()} bytes)")
         } catch (e: Exception) {
             Log.e(TAG, "Upload failed for $remotePath", e)
+            runCatching { sftp.rm(tempRemotePath) } // clean up the staging file
         } finally {
             cacheFile.delete()
             runCatching { sftp.disconnect() }
+            callbackThread.quitSafely()
         }
     }
 

@@ -15,6 +15,7 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.SftpATTRS
+import com.jcraft.jsch.SftpException
 import java.io.File
 import java.io.FileNotFoundException
 
@@ -27,12 +28,11 @@ import java.io.FileNotFoundException
  *   Root:    "myserver:/"
  *   File:    "myserver:/home/alice/docs/report.pdf"
  *
- * Large-file support:
- *   [openDocument] uses [StorageManager.openProxyFileDescriptor] with
- *   [SshReadProxyCallback] / [SshWriteProxyCallback].  Reads support
- *   arbitrary seeking so video players, PDF viewers, and other apps that
- *   access random byte ranges work correctly without downloading the whole
- *   file first.
+ * Large-file / concurrency design:
+ *   Each [openDocument] call gets a **dedicated [HandlerThread]** for its
+ *   [android.os.ProxyFileDescriptorCallback].  This means concurrent open files
+ *   never block each other – a 1 GB upload in one tab does not freeze a text
+ *   editor in another.  The thread is quit in the callback's `onRelease`.
  *
  * Provider methods are invoked on binder threads (already off the main thread),
  * so blocking SFTP I/O is safe here.
@@ -65,14 +65,6 @@ class SshDocumentsProvider : DocumentsProvider() {
     private lateinit var keyStorage: KeyStorage
     private lateinit var connectionManager: SshConnectionManager
     private lateinit var storageManager: StorageManager
-
-    /**
-     * Dedicated thread for [ProxyFileDescriptorCallback] invocations.
-     * A single thread is sufficient – concurrent open files each have their own
-     * channel and their callbacks are dispatched sequentially on this looper.
-     */
-    private val callbackThread = HandlerThread("SshFsCallbacks").also { it.start() }
-    private val callbackHandler = Handler(callbackThread.looper)
 
     override fun onCreate(): Boolean {
         keyStorage = KeyStorage(context!!)
@@ -120,7 +112,6 @@ class SshDocumentsProvider : DocumentsProvider() {
         val (hostAlias, path) = splitDocId(documentId)
 
         if (path == "/") {
-            // Synthetic root directory – no SFTP connection needed.
             cursor.newRow().apply {
                 add(Document.COLUMN_DOCUMENT_ID, documentId)
                 add(Document.COLUMN_DISPLAY_NAME, hostAlias)
@@ -170,7 +161,6 @@ class SshDocumentsProvider : DocumentsProvider() {
             }
         } catch (e: Exception) {
             Log.e(TAG, "queryChildDocuments failed for $parentDocumentId", e)
-            // Return the partial/empty cursor so the picker shows something.
         }
         return cursor
     }
@@ -188,7 +178,7 @@ class SshDocumentsProvider : DocumentsProvider() {
     }
 
     // -------------------------------------------------------------------------
-    // File I/O  –  uses ProxyFileDescriptor for seek / large-file support
+    // File I/O  –  per-file HandlerThread + ProxyFileDescriptor for large files
     // -------------------------------------------------------------------------
 
     override fun openDocument(
@@ -201,11 +191,8 @@ class SshDocumentsProvider : DocumentsProvider() {
         val isWrite = (accessMode and
             (ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_READ_WRITE)) != 0
 
-        return if (isWrite) {
-            openForWrite(hostAlias, path)
-        } else {
-            openForRead(hostAlias, path, signal)
-        }
+        return if (isWrite) openForWrite(hostAlias, path)
+        else openForRead(hostAlias, path, signal)
     }
 
     private fun openForRead(
@@ -213,34 +200,57 @@ class SshDocumentsProvider : DocumentsProvider() {
         path: String,
         signal: CancellationSignal?,
     ): ParcelFileDescriptor {
-        // Open a dedicated SFTP channel; the callback closes it in onRelease().
-        val sftp = connectionManager.openSftpChannel(hostAlias)
+        // Stat the file now so the callback can report the size.  Uses a short-
+        // lived channel rather than the one owned by the callback.
         val fileSize = try {
-            sftp.stat(path).size
+            connectionManager.withSftpChannel(hostAlias) { sftp -> sftp.stat(path).size }
         } catch (e: Exception) {
-            runCatching { sftp.disconnect() }
             throw FileNotFoundException("Cannot stat $hostAlias:$path: ${e.message}")
         }
 
-        return storageManager.openProxyFileDescriptor(
-            ParcelFileDescriptor.MODE_READ_ONLY,
-            SshReadProxyCallback(sftp, path, fileSize, signal),
-            callbackHandler,
-        )
+        // Each open file gets its own thread so slow reads never block other files.
+        val callbackThread = HandlerThread("SshRead-${path.substringAfterLast('/')}").also {
+            it.start()
+        }
+        return try {
+            storageManager.openProxyFileDescriptor(
+                ParcelFileDescriptor.MODE_READ_ONLY,
+                SshReadProxyCallback(connectionManager, hostAlias, path, fileSize, signal, callbackThread),
+                Handler(callbackThread.looper),
+            )
+        } catch (e: Exception) {
+            callbackThread.quitSafely()
+            throw FileNotFoundException("Cannot open $hostAlias:$path: ${e.message}")
+        }
     }
 
-    private fun openForWrite(
-        hostAlias: String,
-        path: String,
-    ): ParcelFileDescriptor {
-        val sftp = connectionManager.openSftpChannel(hostAlias)
+    private fun openForWrite(hostAlias: String, path: String): ParcelFileDescriptor {
         val cacheFile = File.createTempFile("sftp_write_", ".tmp", context!!.cacheDir)
+        val callbackThread = HandlerThread("SshWrite-${path.substringAfterLast('/')}").also {
+            it.start()
+        }
 
-        return storageManager.openProxyFileDescriptor(
-            ParcelFileDescriptor.MODE_READ_WRITE,
-            SshWriteProxyCallback(sftp, path, cacheFile),
-            callbackHandler,
-        )
+        // Open the channel before registering the proxy so we can clean up on failure.
+        val sftp = try {
+            connectionManager.openSftpChannel(hostAlias)
+        } catch (e: Exception) {
+            cacheFile.delete()
+            callbackThread.quitSafely()
+            throw FileNotFoundException("Cannot connect to $hostAlias: ${e.message}")
+        }
+
+        return try {
+            storageManager.openProxyFileDescriptor(
+                ParcelFileDescriptor.MODE_READ_WRITE,
+                SshWriteProxyCallback(sftp, path, cacheFile, callbackThread),
+                Handler(callbackThread.looper),
+            )
+        } catch (e: Exception) {
+            cacheFile.delete()
+            callbackThread.quitSafely()
+            runCatching { sftp.disconnect() }
+            throw FileNotFoundException("Cannot open $hostAlias:$path for write: ${e.message}")
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -273,7 +283,13 @@ class SshDocumentsProvider : DocumentsProvider() {
         val (hostAlias, path) = splitDocId(documentId)
         try {
             connectionManager.withSftpChannel(hostAlias) { sftp ->
-                if (sftp.stat(path).isDir) sftp.rmdir(path) else sftp.rm(path)
+                // Avoid a stat-then-delete TOCTOU race: try rm() first (file),
+                // fall back to rmdir() (directory) on failure.
+                try {
+                    sftp.rm(path)
+                } catch (e: SftpException) {
+                    sftp.rmdir(path)
+                }
             }
         } catch (e: Exception) {
             throw FileNotFoundException("Cannot delete $documentId: ${e.message}")

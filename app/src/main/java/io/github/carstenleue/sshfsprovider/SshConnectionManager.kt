@@ -11,18 +11,18 @@ import java.io.IOException
  * Manages JSch [Session] objects (one per host alias) and opens new [ChannelSftp]
  * channels on demand.
  *
- * Design:
- * - One SSH [Session] is maintained per host; it is reconnected automatically when lost.
- * - Each call to [openSftpChannel] opens a **dedicated** SFTP channel on the existing
- *   session.  This lets multiple files be read/written concurrently (SFTP supports
- *   multiplexed channels over a single SSH connection).
- * - Callers own the returned channel and must call [ChannelSftp.disconnect] when done
- *   (the [SshReadProxyCallback] / [SshWriteProxyCallback] do this in `onRelease`).
- * - Directory-listing operations use [withSftpChannel], which opens and closes a
- *   short-lived channel automatically.
+ * Thread-safety contract:
+ * - The `sessions` map is accessed only inside `synchronized(this)` blocks.
+ * - Network I/O (session.connect, channel.connect) is performed **outside** any lock
+ *   so slow connections do not block unrelated hosts or directory listings.
+ * - Double-checked locking is used in [getOrCreateSession]: two threads may race to
+ *   create a session for the same host; the loser disconnects its session and returns
+ *   the winner's, so callers always get a valid session at the cost of one extra
+ *   short-lived connection in the rare contention case.
  *
- * All public methods are `@Synchronized` and blocking; call them from a background
- * thread ([kotlinx.coroutines.Dispatchers.IO] or the SAF binder thread).
+ * Callers own the channels returned by [openSftpChannel] and must call
+ * [ChannelSftp.disconnect] when finished (the proxy callbacks do this in `onRelease`).
+ * [withSftpChannel] opens and closes a short-lived channel automatically.
  */
 class SshConnectionManager(private val keyStorage: KeyStorage) {
 
@@ -34,9 +34,11 @@ class SshConnectionManager(private val keyStorage: KeyStorage) {
 
     /**
      * Opens a new [ChannelSftp] on the session for [hostAlias].
-     * The caller is responsible for closing it via [ChannelSftp.disconnect].
+     * The caller is responsible for calling [ChannelSftp.disconnect].
+     *
+     * Not synchronized overall; only the [sessions] map access is locked so
+     * slow connections do not block other hosts.
      */
-    @Synchronized
     @Throws(IOException::class)
     fun openSftpChannel(hostAlias: String): ChannelSftp {
         val session = getOrCreateSession(hostAlias)
@@ -45,13 +47,17 @@ class SshConnectionManager(private val keyStorage: KeyStorage) {
                 it.connect(CHANNEL_TIMEOUT_MS)
             }
         } catch (e: JSchException) {
+            // Remove a dead session so the next caller triggers a fresh connect.
+            synchronized(this) {
+                if (sessions[hostAlias] === session) sessions.remove(hostAlias)
+            }
             throw IOException("Failed to open SFTP channel for '$hostAlias': ${e.message}", e)
         }
     }
 
     /**
      * Opens a temporary channel, runs [block], then closes the channel.
-     * Use this for short-lived operations like directory listings or stat calls.
+     * Use this for short-lived operations (stat, ls, mkdir, rm, rename).
      */
     @Throws(IOException::class)
     fun <T> withSftpChannel(hostAlias: String, block: (ChannelSftp) -> T): T {
@@ -70,17 +76,31 @@ class SshConnectionManager(private val keyStorage: KeyStorage) {
     }
 
     // -------------------------------------------------------------------------
-    // Session lifecycle
+    // Session lifecycle  –  double-checked locking
     // -------------------------------------------------------------------------
 
-    @Synchronized
     @Throws(IOException::class)
     private fun getOrCreateSession(hostAlias: String): Session {
-        val existing = sessions[hostAlias]
-        if (existing != null && existing.isConnected) return existing
-        existing?.let { runCatching { it.disconnect() } }
-        sessions.remove(hostAlias)
-        return createSession(hostAlias).also { sessions[hostAlias] = it }
+        // Fast path: return existing connected session without blocking.
+        synchronized(this) {
+            sessions[hostAlias]?.takeIf { it.isConnected }?.let { return it }
+        }
+
+        // Slow path: establish a new connection outside the lock so concurrent
+        // callers for different hosts are not serialised.
+        val newSession = createSession(hostAlias)
+
+        // Store the session, but check again in case another thread beat us.
+        synchronized(this) {
+            val existing = sessions[hostAlias]
+            if (existing != null && existing.isConnected) {
+                // Another thread won the race; discard our extra session.
+                runCatching { newSession.disconnect() }
+                return existing
+            }
+            sessions[hostAlias] = newSession
+            return newSession
+        }
     }
 
     @Throws(IOException::class)

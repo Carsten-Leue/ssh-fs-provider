@@ -1,6 +1,7 @@
 package io.github.carstenleue.sshfsprovider
 
 import android.os.CancellationSignal
+import android.os.HandlerThread
 import android.os.ProxyFileDescriptorCallback
 import android.system.ErrnoException
 import android.system.OsConstants
@@ -14,23 +15,33 @@ import java.io.InputStream
 /**
  * [ProxyFileDescriptorCallback] for reading remote SFTP files with full seek support.
  *
- * Random-access reads (e.g. from video players, PDF viewers, or media indexers) work
- * efficiently because each seek simply reopens the SFTP stream at the requested offset
- * using `ChannelSftp.get(path, monitor, skip)` — the server sends only the bytes
- * actually needed, not the whole file.
+ * Thread-safety:
+ *   All callbacks are serialised on [callbackThread] by
+ *   [android.os.storage.StorageManager.openProxyFileDescriptor], so [sftp], [stream],
+ *   and [streamOffset] need no additional locking.
  *
- * Sequential reads reuse the open [InputStream] without any reconnection overhead.
+ * Channel lifecycle:
+ *   The SFTP channel is opened **lazily** on the first [onRead] call rather than
+ *   at construction time.  This avoids the race where the channel is established
+ *   before the callback is registered and could be disconnected before first use.
  *
- * Thread-safety: callbacks from [android.os.storage.StorageManager.openProxyFileDescriptor]
- * are serialised on the supplied [android.os.Handler], so no additional locking is needed here.
+ * Seek strategy:
+ *   - Forward seeks within [MAX_SKIP_BYTES] skip bytes in the existing [InputStream]
+ *     (zero extra network round-trips).
+ *   - Larger forward seeks and all backward seeks reopen the remote stream at the
+ *     requested offset via [ChannelSftp.get] with a skip parameter – the server
+ *     seeks directly and only the requested bytes travel over the wire.
  */
 class SshReadProxyCallback(
-    private val sftp: ChannelSftp,
+    private val connectionManager: SshConnectionManager,
+    private val hostAlias: String,
     private val remotePath: String,
     private val fileSize: Long,
     private val signal: CancellationSignal?,
+    private val callbackThread: HandlerThread,
 ) : ProxyFileDescriptorCallback() {
 
+    private var sftp: ChannelSftp? = null
     private var stream: InputStream? = null
     private var streamOffset: Long = -1L
 
@@ -38,6 +49,7 @@ class SshReadProxyCallback(
 
     override fun onRead(offset: Long, size: Int, data: ByteArray): Int {
         signal?.throwIfCanceled()
+        ensureChannel()
         ensureStream(offset)
 
         var read = 0
@@ -57,22 +69,60 @@ class SshReadProxyCallback(
 
     override fun onRelease() {
         closeStream()
-        runCatching { sftp.disconnect() }
+        runCatching { sftp?.disconnect() }
+        callbackThread.quitSafely()
     }
 
     // -------------------------------------------------------------------------
 
+    private fun ensureChannel() {
+        if (sftp != null && sftp!!.isConnected) return
+        try {
+            sftp = connectionManager.openSftpChannel(hostAlias)
+        } catch (e: IOException) {
+            Log.e(TAG, "Cannot open SFTP channel for $hostAlias", e)
+            throw ErrnoException("ensureChannel", OsConstants.EIO)
+        }
+    }
+
     /**
-     * Opens (or re-opens) the remote stream at [offset].
-     * Re-opening is cheap for SFTP because the server jumps directly to the
-     * requested position without transferring skipped bytes.
+     * Ensures [stream] is positioned at [offset].
+     *
+     * - Equal to current position: no-op.
+     * - Small forward seek (≤ [MAX_SKIP_BYTES]): skip within the existing stream.
+     * - All other seeks: close and reopen the stream at [offset].
      */
     private fun ensureStream(offset: Long) {
-        if (stream != null && streamOffset == offset) return
+        val s = stream
+
+        if (s != null && streamOffset == offset) return
+
+        // Small forward seek: skip in-stream to avoid a network round-trip.
+        if (s != null && offset > streamOffset) {
+            val toSkip = offset - streamOffset
+            if (toSkip <= MAX_SKIP_BYTES) {
+                try {
+                    var remaining = toSkip
+                    while (remaining > 0) {
+                        val n = s.skip(remaining)
+                        if (n <= 0) break
+                        remaining -= n
+                    }
+                    if (remaining == 0L) {
+                        streamOffset = offset
+                        return
+                    }
+                } catch (_: IOException) {
+                    // Fall through to reopen.
+                }
+            }
+        }
+
+        // Reopen at the requested offset (handles backward seeks and large jumps).
         closeStream()
         try {
             @Suppress("DEPRECATION")
-            stream = sftp.get(remotePath, null as SftpProgressMonitor?, offset)
+            stream = sftp!!.get(remotePath, null as SftpProgressMonitor?, offset)
             streamOffset = offset
         } catch (e: SftpException) {
             Log.e(TAG, "Failed to open stream at offset $offset for $remotePath", e)
@@ -88,5 +138,8 @@ class SshReadProxyCallback(
 
     companion object {
         private const val TAG = "SshReadProxyCallback"
+
+        /** Skip within the current stream rather than reopening for seeks this small. */
+        private const val MAX_SKIP_BYTES = 256 * 1024L // 256 KB
     }
 }
