@@ -1,0 +1,179 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SSH FS Provider</string>
+
+    <!-- Shown in Settings > Apps > App info (plain text, no emojis) -->
+    <string name="app_description">
+        Mounts remote SSH/SFTP servers as file system roots accessible from any
+        Android app that uses the Storage Access Framework (SAF) file picker.
+        Private keys and configuration are stored encrypted using the Android
+        Keystore so they never leave the device in plain text.
+    </string>
+
+    <!-- Shown in Settings > Apps > ConfigImportActivity info (plain text, no emojis) -->
+    <string name="activity_import_description">
+        Import an SSH config bundle and manage which servers are available as
+        storage locations on this device.
+    </string>
+
+    <!-- Label shown in the SAF file picker root list -->
+    <string name="provider_label">🔒 SSH File Systems</string>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!-- Main screen                                                          -->
+    <!-- ------------------------------------------------------------------ -->
+
+    <string name="description">
+        📦 Import a .tgz bundle containing your SSH config file and private keys.
+        Once imported, your SSH servers appear as storage locations in the
+        Android file picker and any app that supports the Storage Access Framework.
+    </string>
+
+    <string name="status_label">🖥️ Configured hosts</string>
+    <string name="no_config_message">📭 No configuration imported yet.</string>
+    <string name="status_configured">%1$s</string>
+
+    <string name="import_config">Import config bundle (.tgz)</string>
+    <string name="clear_config">Clear configuration</string>
+
+    <!-- %1$d = number of hosts, %2$d = number of keys -->
+    <string name="import_success">✅ Imported %1$d host(s) with %2$d key(s).</string>
+    <string name="import_error">❌ Import failed: %1$s</string>
+    <string name="config_cleared">🗑️ Configuration cleared.</string>
+
+    <string name="error_no_config_entry">❌ Archive must contain a file named \'config\'.</string>
+    <string name="error_no_hosts">❌ No valid Host entries found in the SSH config.</string>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!-- Overflow menu                                                        -->
+    <!-- ------------------------------------------------------------------ -->
+
+    <string name="menu_export">📤 Export config bundle</string>
+    <string name="menu_help">❓ Help</string>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!-- Export                                                               -->
+    <!-- ------------------------------------------------------------------ -->
+
+    <string name="export_filename">ssh_config_bundle.tgz</string>
+    <!-- %1$d = number of hosts, %2$d = number of keys -->
+    <string name="export_success">✅ Exported %1$d host(s) and %2$d key(s).</string>
+    <string name="export_error">❌ Export failed: %1$s</string>
+    <string name="export_no_config">📭 Nothing to export — no configuration imported yet.</string>
+
+    <!-- ------------------------------------------------------------------ -->
+    <!-- Help screen                                                          -->
+    <!-- ------------------------------------------------------------------ -->
+
+    <string name="help_title">❓ Help</string>
+
+    <string name="help_what_heading">💡 What does this app do?</string>
+    <string name="help_what_body">
+        SSH FS Provider mounts remote SSH/SFTP servers as document roots inside
+        the Android Storage Access Framework (SAF).  Once configured, any app
+        that uses the system file picker — Files, photo pickers, text editors,
+        video players — can open, save, and browse files directly on your
+        servers without needing a separate sync step.
+    </string>
+
+    <string name="help_prepare_heading">📦 Preparing the config bundle</string>
+    <string name="help_prepare_body">
+        Create a .tgz archive (tar + gzip) containing the following files in a
+        flat structure (no sub-directories):\n\n
+        \u2022  config          — OpenSSH-format config file (required)\n
+        \u2022  known_hosts     — host key verification file (recommended)\n
+        \u2022  &lt;keyfile&gt;  — one or more private key files (e.g. id_ed25519)\n\n
+        Example archive structure:\n\n
+        bundle.tgz\n
+        ├── config\n
+        ├── known_hosts\n
+        └── id_ed25519\n\n
+        Example config file:\n\n
+        Host myserver\n
+        \u2002\u2002HostName 192.168.1.10\n
+        \u2002\u2002User alice\n
+        \u2002\u2002Port 22\n
+        \u2002\u2002IdentityFile id_ed25519\n\n
+        Create the bundle on your computer:\n\n
+        tar -czf bundle.tgz -C ~/.ssh config known_hosts id_ed25519
+    </string>
+
+    <string name="help_import_heading">📥 Importing the bundle</string>
+    <string name="help_import_body">
+        1. Transfer bundle.tgz to your Android device (email, USB, cloud
+           storage, etc.).\n
+        2. Open SSH FS Provider and tap Import config bundle (.tgz).\n
+        3. Select the bundle file in the file picker.\n
+        4. A success message confirms how many hosts and keys were imported.\n\n
+        The app reads the IdentityFile value from each Host block and looks for
+        a matching filename inside the archive.  Only the filename is used —
+        paths are stripped.
+    </string>
+
+    <string name="help_use_heading">🖥️ Using SSH servers in other apps</string>
+    <string name="help_use_body">
+        After a successful import, SSH servers appear as storage roots in the
+        Android file picker:\n\n
+        \u2022  Open any app that supports file access (e.g. Files by Google,
+           a text editor, a video player).\n
+        \u2022  Tap Open or Browse, then look for your server name in the left
+           drawer or the list of storage locations.\n
+        \u2022  Navigate directories and open files just like local storage.\n
+        \u2022  Writes are buffered locally and uploaded atomically when the
+           file is closed, so the remote file is never left in a
+           partially-written state.
+    </string>
+
+    <string name="help_known_hosts_heading">🛡️ Host key verification</string>
+    <string name="help_known_hosts_body">
+        Including a known_hosts file in your bundle is strongly recommended.
+        When present, SSH FS Provider verifies the server\'s host key against
+        the file before connecting (StrictHostKeyChecking = yes).  Without it,
+        host key checking is disabled and the connection is vulnerable to
+        man-in-the-middle attacks.\n\n
+        Generate known_hosts for a specific server:\n\n
+        ssh-keyscan -H myserver.example.com >> ~/.ssh/known_hosts
+    </string>
+
+    <string name="help_security_heading">🔒 Security</string>
+    <string name="help_security_body">
+        \u2022  Private keys and the config file are stored encrypted with
+           AES-256-GCM using a master key held in the Android Keystore — they
+           cannot be extracted without the device unlock credential.\n
+        \u2022  Android Backup is disabled so keys are never uploaded to
+           Google\'s backup servers.\n
+        \u2022  Key bytes are zeroed in memory immediately after they are handed
+           to the SSH library.\n
+        \u2022  The Documents Provider is accessible only through the system
+           document picker; third-party apps cannot query it directly.
+    </string>
+
+    <string name="help_supported_heading">⚡ Supported SSH features</string>
+    <string name="help_supported_body">
+        Key types:   Ed25519, ECDSA (nistp256), RSA (rsa-sha2-256 / rsa-sha2-512)\n
+        KEX:         curve25519-sha256, ecdh-sha2-nistp256,\n
+        \u2002\u2002\u2002\u2002\u2002\u2002\u2002\u2002\u2002\u2002\u2002
+                     diffie-hellman-group14-sha256\n
+        Auth:        Public-key only\n
+        Operations:  Browse, open, create, write, delete, rename\n
+        Large files: Seek-capable reads via server-side offset; writes buffered
+                     locally then uploaded atomically
+    </string>
+
+    <string name="help_troubleshoot_heading">🔧 Troubleshooting</string>
+    <string name="help_troubleshoot_body">
+        Server not appearing in file picker\n
+        \u2022  Re-import the bundle — the file picker refreshes automatically.\n
+        \u2022  Check that the config file contains at least one Host block.\n\n
+        Connection refused / timeout\n
+        \u2022  Verify hostname, port, and that the server is reachable from
+           the device network.\n\n
+        Authentication failed\n
+        \u2022  Confirm the key file name in IdentityFile exactly matches the
+           filename in the bundle.\n
+        \u2022  Ensure the corresponding public key is in ~/.ssh/authorized_keys
+           on the server.\n\n
+        Host key verification failed\n
+        \u2022  Re-run ssh-keyscan and re-import with the updated known_hosts.
+    </string>
+</resources>

@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Network security configuration.
+
+    SSH FS Provider communicates only over SSH (port 22 or user-configured),
+    which uses its own transport-layer encryption.  No HTTP/HTTPS cleartext
+    is ever needed, so we leave the default Android policy intact (cleartext
+    disabled on API 28+) and make no special exceptions.
+
+    This file exists solely to be referenced from the <application> element
+    in AndroidManifest.xml so that the security posture is explicit and
+    auditable rather than relying on implicit platform defaults.
+-->
+<network-security-config>
+    <!-- Use the platform default: no cleartext, system trust anchors only. -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>
