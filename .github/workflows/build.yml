@@ -1,0 +1,96 @@
+name: Build APKs
+
+on:
+  push:
+    branches:
+      - main
+      - "claude/**"
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build & upload APKs
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: "temurin"
+
+      # Downloads Gradle 8.6 and caches it – no gradle-wrapper.jar required.
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.6"
+          cache-read-only: false
+
+      - name: Build debug APK (auto-signed with debug keystore)
+        run: gradle :app:assembleDebug
+
+      - name: Build release APK (unsigned)
+        run: gradle :app:assembleRelease
+
+      # -----------------------------------------------------------------------
+      # Upload artifacts
+      # -----------------------------------------------------------------------
+
+      - name: Upload debug APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-fs-provider-debug-${{ github.sha }}
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14
+
+      - name: Upload release APK (unsigned)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-fs-provider-release-unsigned-${{ github.sha }}
+          path: app/build/outputs/apk/release/app-release-unsigned.apk
+          retention-days: 14
+
+      # -----------------------------------------------------------------------
+      # Optional: sign the release APK when signing secrets are present.
+      #
+      # To enable:
+      #   1. Generate a keystore:
+      #        keytool -genkey -v -keystore release.jks -alias release \
+      #          -keyalg RSA -keysize 4096 -validity 10000
+      #   2. Base64-encode it:
+      #        base64 -w0 release.jks > release.jks.b64
+      #   3. Add these repository secrets in GitHub → Settings → Secrets:
+      #        SIGNING_KEY            = contents of release.jks.b64
+      #        SIGNING_KEY_ALIAS      = release
+      #        SIGNING_KEY_PASSWORD   = <key password>
+      #        SIGNING_STORE_PASSWORD = <keystore password>
+      # -----------------------------------------------------------------------
+
+      - name: Sign release APK
+        if: |
+          github.event_name != 'pull_request' &&
+          secrets.SIGNING_KEY != ''
+        uses: r0adkll/sign-android-release@v1
+        id: sign
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+          alias: ${{ secrets.SIGNING_KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.SIGNING_STORE_PASSWORD }}
+          keyPassword: ${{ secrets.SIGNING_KEY_PASSWORD }}
+        env:
+          BUILD_TOOLS_VERSION: "34.0.0"
+
+      - name: Upload signed release APK
+        if: steps.sign.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ssh-fs-provider-release-signed-${{ github.sha }}
+          path: ${{ steps.sign.outputs.signedReleaseFile }}
+          retention-days: 90

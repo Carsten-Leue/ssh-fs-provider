@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">SSH FS Provider</string>
+
+    <string name="description">
+        Import a .tgz bundle containing your SSH config file and private keys.
+        Once imported, your SSH servers appear as storage locations in the
+        Android file picker and any app that supports the Storage Access Framework.
+    </string>
+
+    <string name="status_label">Configured hosts</string>
+    <string name="no_config_message">No configuration imported yet.</string>
+    <string name="status_configured">%1$s</string>
+
+    <string name="import_config">Import config bundle (.tgz)</string>
+    <string name="clear_config">Clear configuration</string>
+
+    <!-- %1$d = number of hosts, %2$d = number of keys -->
+    <string name="import_success">Imported %1$d host(s) with %2$d key(s).</string>
+    <string name="import_error">Import failed: %1$s</string>
+    <string name="config_cleared">Configuration cleared.</string>
+
+    <string name="error_no_config_entry">Archive must contain a file named \'config\'.</string>
+    <string name="error_no_hosts">No valid Host entries found in the SSH config.</string>
+</resources>

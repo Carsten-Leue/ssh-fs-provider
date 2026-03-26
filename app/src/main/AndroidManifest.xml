@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- SSH connections require internet access -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SshFsProvider">
+
+        <!-- Launcher: config import / management UI -->
+        <activity
+            android:name=".ConfigImportActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:launchMode="singleTop">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            SAF DocumentsProvider – exposes SFTP file systems to all Android apps.
+
+            android:permission="android.permission.MANAGE_DOCUMENTS" restricts
+            direct provider access to the system document picker only, which is
+            the correct security model for a DocumentsProvider.
+        -->
+        <provider
+            android:name=".SshDocumentsProvider"
+            android:authorities="io.github.carstenleue.sshfsprovider.documents"
+            android:exported="true"
+            android:grantUriPermissions="true"
+            android:permission="android.permission.MANAGE_DOCUMENTS">
+            <intent-filter>
+                <action android:name="android.content.action.DOCUMENTS_PROVIDER" />
+            </intent-filter>
+        </provider>
+
+    </application>
+
+</manifest>
