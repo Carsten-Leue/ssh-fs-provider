@@ -3,7 +3,10 @@ package io.github.carstenleue.sshfsprovider
 import android.database.Cursor
 import android.database.MatrixCursor
 import android.os.CancellationSignal
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.ParcelFileDescriptor
+import android.os.storage.StorageManager
 import android.provider.DocumentsContract
 import android.provider.DocumentsContract.Document
 import android.provider.DocumentsContract.Root
@@ -12,6 +15,7 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import com.jcraft.jsch.ChannelSftp
 import com.jcraft.jsch.SftpATTRS
+import java.io.File
 import java.io.FileNotFoundException
 
 /**
@@ -22,6 +26,13 @@ import java.io.FileNotFoundException
  * Document ID format: "<hostAlias>:<absolutePath>"
  *   Root:    "myserver:/"
  *   File:    "myserver:/home/alice/docs/report.pdf"
+ *
+ * Large-file support:
+ *   [openDocument] uses [StorageManager.openProxyFileDescriptor] with
+ *   [SshReadProxyCallback] / [SshWriteProxyCallback].  Reads support
+ *   arbitrary seeking so video players, PDF viewers, and other apps that
+ *   access random byte ranges work correctly without downloading the whole
+ *   file first.
  *
  * Provider methods are invoked on binder threads (already off the main thread),
  * so blocking SFTP I/O is safe here.
@@ -53,10 +64,20 @@ class SshDocumentsProvider : DocumentsProvider() {
 
     private lateinit var keyStorage: KeyStorage
     private lateinit var connectionManager: SshConnectionManager
+    private lateinit var storageManager: StorageManager
+
+    /**
+     * Dedicated thread for [ProxyFileDescriptorCallback] invocations.
+     * A single thread is sufficient – concurrent open files each have their own
+     * channel and their callbacks are dispatched sequentially on this looper.
+     */
+    private val callbackThread = HandlerThread("SshFsCallbacks").also { it.start() }
+    private val callbackHandler = Handler(callbackThread.looper)
 
     override fun onCreate(): Boolean {
         keyStorage = KeyStorage(context!!)
         connectionManager = SshConnectionManager(keyStorage)
+        storageManager = context!!.getSystemService(StorageManager::class.java)
         return true
     }
 
@@ -110,10 +131,11 @@ class SshDocumentsProvider : DocumentsProvider() {
             }
         } else {
             try {
-                val sftp = connectionManager.getSftpChannel(hostAlias)
-                val attrs = sftp.stat(path)
-                val name = path.substringAfterLast('/')
-                cursor.addDocumentRow(documentId, name, attrs)
+                connectionManager.withSftpChannel(hostAlias) { sftp ->
+                    val attrs = sftp.stat(path)
+                    val name = path.substringAfterLast('/')
+                    cursor.addDocumentRow(documentId, name, attrs)
+                }
             } catch (e: Exception) {
                 Log.e(TAG, "queryDocument failed for $documentId", e)
                 throw FileNotFoundException("Cannot stat $documentId: ${e.message}")
@@ -136,14 +158,15 @@ class SshDocumentsProvider : DocumentsProvider() {
         val (hostAlias, parentPath) = splitDocId(parentDocumentId)
 
         try {
-            val sftp = connectionManager.getSftpChannel(hostAlias)
-            val entries = sftp.ls(parentPath)
-            for (item in entries) {
-                val entry = item as? ChannelSftp.LsEntry ?: continue
-                val name = entry.filename
-                if (name == "." || name == "..") continue
-                val childPath = if (parentPath == "/") "/$name" else "$parentPath/$name"
-                cursor.addDocumentRow("$hostAlias:$childPath", name, entry.attrs)
+            connectionManager.withSftpChannel(hostAlias) { sftp ->
+                val entries = sftp.ls(parentPath)
+                for (item in entries) {
+                    val entry = item as? ChannelSftp.LsEntry ?: continue
+                    val name = entry.filename
+                    if (name == "." || name == "..") continue
+                    val childPath = if (parentPath == "/") "/$name" else "$parentPath/$name"
+                    cursor.addDocumentRow("$hostAlias:$childPath", name, entry.attrs)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "queryChildDocuments failed for $parentDocumentId", e)
@@ -165,7 +188,7 @@ class SshDocumentsProvider : DocumentsProvider() {
     }
 
     // -------------------------------------------------------------------------
-    // File I/O
+    // File I/O  –  uses ProxyFileDescriptor for seek / large-file support
     // -------------------------------------------------------------------------
 
     override fun openDocument(
@@ -178,8 +201,11 @@ class SshDocumentsProvider : DocumentsProvider() {
         val isWrite = (accessMode and
             (ParcelFileDescriptor.MODE_WRITE_ONLY or ParcelFileDescriptor.MODE_READ_WRITE)) != 0
 
-        return if (isWrite) openForWrite(hostAlias, path, signal)
-        else openForRead(hostAlias, path, signal)
+        return if (isWrite) {
+            openForWrite(hostAlias, path)
+        } else {
+            openForRead(hostAlias, path, signal)
+        }
     }
 
     private fun openForRead(
@@ -187,49 +213,34 @@ class SshDocumentsProvider : DocumentsProvider() {
         path: String,
         signal: CancellationSignal?,
     ): ParcelFileDescriptor {
-        val (readEnd, writeEnd) = ParcelFileDescriptor.createReliablePipe()
+        // Open a dedicated SFTP channel; the callback closes it in onRelease().
+        val sftp = connectionManager.openSftpChannel(hostAlias)
+        val fileSize = try {
+            sftp.stat(path).size
+        } catch (e: Exception) {
+            runCatching { sftp.disconnect() }
+            throw FileNotFoundException("Cannot stat $hostAlias:$path: ${e.message}")
+        }
 
-        Thread {
-            try {
-                ParcelFileDescriptor.AutoCloseOutputStream(writeEnd).use { out ->
-                    val sftp = connectionManager.getSftpChannel(hostAlias)
-                    sftp.get(path).use { input ->
-                        val buf = ByteArray(DEFAULT_BUFFER_SIZE)
-                        var len: Int
-                        while (input.read(buf).also { len = it } != -1) {
-                            signal?.throwIfCanceled()
-                            out.write(buf, 0, len)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "SFTP read failed: $hostAlias:$path", e)
-                runCatching { writeEnd.closeWithError(e.message) }
-            }
-        }.apply { isDaemon = true }.start()
-
-        return readEnd
+        return storageManager.openProxyFileDescriptor(
+            ParcelFileDescriptor.MODE_READ_ONLY,
+            SshReadProxyCallback(sftp, path, fileSize, signal),
+            callbackHandler,
+        )
     }
 
     private fun openForWrite(
         hostAlias: String,
         path: String,
-        signal: CancellationSignal?,
     ): ParcelFileDescriptor {
-        val (readEnd, writeEnd) = ParcelFileDescriptor.createReliablePipe()
+        val sftp = connectionManager.openSftpChannel(hostAlias)
+        val cacheFile = File.createTempFile("sftp_write_", ".tmp", context!!.cacheDir)
 
-        Thread {
-            try {
-                ParcelFileDescriptor.AutoCloseInputStream(readEnd).use { input ->
-                    val sftp = connectionManager.getSftpChannel(hostAlias)
-                    sftp.put(input, path, ChannelSftp.OVERWRITE)
-                }
-            } catch (e: Exception) {
-                Log.e(TAG, "SFTP write failed: $hostAlias:$path", e)
-            }
-        }.apply { isDaemon = true }.start()
-
-        return writeEnd
+        return storageManager.openProxyFileDescriptor(
+            ParcelFileDescriptor.MODE_READ_WRITE,
+            SshWriteProxyCallback(sftp, path, cacheFile),
+            callbackHandler,
+        )
     }
 
     // -------------------------------------------------------------------------
@@ -245,11 +256,12 @@ class SshDocumentsProvider : DocumentsProvider() {
         val childPath = if (parentPath == "/") "/$displayName" else "$parentPath/$displayName"
 
         try {
-            val sftp = connectionManager.getSftpChannel(hostAlias)
-            if (mimeType == Document.MIME_TYPE_DIR) {
-                sftp.mkdir(childPath)
-            } else {
-                sftp.put(ByteArray(0).inputStream(), childPath)
+            connectionManager.withSftpChannel(hostAlias) { sftp ->
+                if (mimeType == Document.MIME_TYPE_DIR) {
+                    sftp.mkdir(childPath)
+                } else {
+                    sftp.put(ByteArray(0).inputStream(), childPath)
+                }
             }
         } catch (e: Exception) {
             throw FileNotFoundException("Cannot create $childPath: ${e.message}")
@@ -260,8 +272,9 @@ class SshDocumentsProvider : DocumentsProvider() {
     override fun deleteDocument(documentId: String) {
         val (hostAlias, path) = splitDocId(documentId)
         try {
-            val sftp = connectionManager.getSftpChannel(hostAlias)
-            if (sftp.stat(path).isDir) sftp.rmdir(path) else sftp.rm(path)
+            connectionManager.withSftpChannel(hostAlias) { sftp ->
+                if (sftp.stat(path).isDir) sftp.rmdir(path) else sftp.rm(path)
+            }
         } catch (e: Exception) {
             throw FileNotFoundException("Cannot delete $documentId: ${e.message}")
         }
@@ -271,7 +284,9 @@ class SshDocumentsProvider : DocumentsProvider() {
         val (hostAlias, path) = splitDocId(documentId)
         val newPath = "${path.substringBeforeLast('/')}/$displayName"
         try {
-            connectionManager.getSftpChannel(hostAlias).rename(path, newPath)
+            connectionManager.withSftpChannel(hostAlias) { sftp ->
+                sftp.rename(path, newPath)
+            }
         } catch (e: Exception) {
             throw FileNotFoundException("Cannot rename $documentId: ${e.message}")
         }
