@@ -1,30 +1,39 @@
 package io.github.carstenleue.sshfsprovider
 
+import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
 import android.provider.DocumentsContract
+import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.widget.TextView
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.appbar.MaterialToolbar
 import com.google.android.material.button.MaterialButton
 import com.google.android.material.progressindicator.CircularProgressIndicator
 import com.google.android.material.snackbar.Snackbar
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
+import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
 import java.io.ByteArrayOutputStream
 
 /**
  * Main launcher activity.
  *
- * Allows the user to import an SSH config bundle (.tgz) containing:
- *   config       – OpenSSH-format config file (required)
- *   known_hosts  – host key verification file (optional but recommended)
- *   <keyfile>    – one or more private key files referenced in `config`
+ * Allows the user to:
+ *   - Import an SSH config bundle (.tgz) containing an OpenSSH config file,
+ *     optional known_hosts, and private key files.
+ *   - Export the currently stored config and keys back to a .tgz bundle so
+ *     they can be backed up or transferred to another device.
+ *   - Clear all stored credentials from the device.
  *
  * Bundle format (flat structure, no sub-directories for key files):
  *   bundle.tgz
@@ -48,9 +57,21 @@ class ConfigImportActivity : AppCompatActivity() {
         uri?.let { importConfig(it) }
     }
 
+    /**
+     * Launches the system file-save picker so the user can choose where to
+     * write the exported bundle.  The result URI is forwarded to [exportConfig].
+     */
+    private val createExportFile =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("application/gzip")) { uri ->
+            uri?.let { exportConfig(it) }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_config_import)
+
+        val toolbar = findViewById<MaterialToolbar>(R.id.toolbar)
+        setSupportActionBar(toolbar)
 
         keyStorage = KeyStorage(this)
 
@@ -63,6 +84,37 @@ class ConfigImportActivity : AppCompatActivity() {
         clearButton.setOnClickListener { clearConfig() }
 
         updateStatus()
+    }
+
+    // -------------------------------------------------------------------------
+    // Toolbar menu
+    // -------------------------------------------------------------------------
+
+    override fun onCreateOptionsMenu(menu: Menu): Boolean {
+        menuInflater.inflate(R.menu.menu_main, menu)
+        return true
+    }
+
+    override fun onPrepareOptionsMenu(menu: Menu): Boolean {
+        // Export is only meaningful when there is a config to export.
+        menu.findItem(R.id.action_export)?.isEnabled = keyStorage.hasConfig()
+        return super.onPrepareOptionsMenu(menu)
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
+        R.id.action_export -> {
+            if (keyStorage.hasConfig()) {
+                createExportFile.launch(getString(R.string.export_filename))
+            } else {
+                Snackbar.make(importButton, R.string.export_no_config, Snackbar.LENGTH_SHORT).show()
+            }
+            true
+        }
+        R.id.action_help -> {
+            startActivity(Intent(this, HelpActivity::class.java))
+            true
+        }
+        else -> super.onOptionsItemSelected(item)
     }
 
     // -------------------------------------------------------------------------
@@ -84,6 +136,7 @@ class ConfigImportActivity : AppCompatActivity() {
                             null,
                         )
                         updateStatus()
+                        invalidateOptionsMenu()
                         Snackbar.make(
                             importButton,
                             getString(R.string.import_success, hostCount, keyCount),
@@ -164,6 +217,118 @@ class ConfigImportActivity : AppCompatActivity() {
     }
 
     // -------------------------------------------------------------------------
+    // Export
+    // -------------------------------------------------------------------------
+
+    private fun exportConfig(uri: Uri) {
+        setLoading(true)
+
+        lifecycleScope.launch(Dispatchers.IO) {
+            val result = runCatching { doExport(uri) }
+
+            withContext(Dispatchers.Main) {
+                setLoading(false)
+                result.fold(
+                    onSuccess = { (hostCount, keyCount) ->
+                        Snackbar.make(
+                            importButton,
+                            getString(R.string.export_success, hostCount, keyCount),
+                            Snackbar.LENGTH_LONG,
+                        ).show()
+                    },
+                    onFailure = { e ->
+                        Snackbar.make(
+                            importButton,
+                            getString(R.string.export_error, e.message),
+                            Snackbar.LENGTH_LONG,
+                        ).show()
+                    },
+                )
+            }
+        }
+    }
+
+    /**
+     * Re-assembles the config, known_hosts, and all stored private keys into a
+     * .tgz bundle and writes it to [uri].
+     *
+     * The archive layout mirrors what the import logic expects:
+     *   bundle.tgz
+     *   ├── config         – OpenSSH-format config, reconstructed from stored data
+     *   ├── known_hosts    – host key file (only if present in stored config)
+     *   └── <keyfile>      – one entry per host key, named after IdentityFile
+     *
+     * Runs on [Dispatchers.IO].
+     * @return (number of hosts, number of keys exported)
+     */
+    private fun doExport(uri: Uri): Pair<Int, Int> {
+        val config = keyStorage.loadConfig()
+            ?: throw IllegalStateException(getString(R.string.export_no_config))
+
+        val keys = keyStorage.loadAllPrivateKeys()
+
+        contentResolver.openOutputStream(uri)!!.use { out ->
+            writeTgz(out, config, keys)
+        }
+
+        return config.hosts.size to keys.size
+    }
+
+    /**
+     * Writes the config bundle as a .tgz to [out].
+     * Key bytes are zeroed after being written into the archive stream.
+     */
+    private fun writeTgz(out: java.io.OutputStream, config: SshConfig, keys: Map<String, ByteArray>) {
+        GzipCompressorOutputStream(out).use { gz ->
+            TarArchiveOutputStream(gz).use { tar ->
+                tar.setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX)
+
+                // config file – reconstruct from stored SshConfig
+                val configBytes = buildConfigText(config).toByteArray(Charsets.UTF_8)
+                tar.putArchiveEntry(TarArchiveEntry("config").also { it.size = configBytes.size.toLong() })
+                tar.write(configBytes)
+                tar.closeArchiveEntry()
+
+                // known_hosts (optional)
+                val knownHostsContent = config.knownHostsContent
+                if (knownHostsContent != null) {
+                    val khBytes = knownHostsContent.toByteArray(Charsets.UTF_8)
+                    tar.putArchiveEntry(TarArchiveEntry("known_hosts").also { it.size = khBytes.size.toLong() })
+                    tar.write(khBytes)
+                    tar.closeArchiveEntry()
+                }
+
+                // one key file per host alias
+                for (host in config.hosts) {
+                    val keyName = host.identityFile ?: continue
+                    val keyBytes = keys[host.alias] ?: continue
+                    tar.putArchiveEntry(TarArchiveEntry(keyName).also { it.size = keyBytes.size.toLong() })
+                    tar.write(keyBytes)
+                    tar.closeArchiveEntry()
+                    keyBytes.fill(0)
+                }
+            }
+        }
+    }
+
+    /**
+     * Reconstructs an OpenSSH-format config file text from a [SshConfig].
+     * Each host gets its own `Host` block with the stored fields.
+     */
+    private fun buildConfigText(config: SshConfig): String = buildString {
+        for (host in config.hosts) {
+            append("Host ${host.alias}\n")
+            append("    HostName ${host.hostname}\n")
+            append("    User ${host.user}\n")
+            append("    Port ${host.port}\n")
+            if (host.identityFile != null) {
+                append("    IdentityFile ${host.identityFile}\n")
+            }
+            append("\n")
+        }
+    }
+
+    // -------------------------------------------------------------------------
     // Clear
     // -------------------------------------------------------------------------
 
@@ -174,6 +339,7 @@ class ConfigImportActivity : AppCompatActivity() {
             null,
         )
         updateStatus()
+        invalidateOptionsMenu()
         Snackbar.make(importButton, R.string.config_cleared, Snackbar.LENGTH_SHORT).show()
     }
 

@@ -1,0 +1,153 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.coordinatorlayout.widget.CoordinatorLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:fitsSystemWindows="true">
+
+    <com.google.android.material.appbar.AppBarLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fitsSystemWindows="true">
+
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:navigationIcon="@drawable/ic_arrow_back"
+            app:title="@string/help_title" />
+
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <androidx.core.widget.NestedScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:layout_behavior="@string/appbar_scrolling_view_behavior">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="24dp">
+
+            <!-- What does this app do? -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_what_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_what_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:paddingBottom="24dp" />
+
+            <!-- Preparing the config bundle -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_prepare_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_prepare_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:fontFamily="monospace"
+                android:paddingBottom="24dp" />
+
+            <!-- Importing the bundle -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_import_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_import_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:paddingBottom="24dp" />
+
+            <!-- Using SSH servers in other apps -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_use_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_use_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:paddingBottom="24dp" />
+
+            <!-- Host key verification -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_known_hosts_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_known_hosts_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:fontFamily="monospace"
+                android:paddingBottom="24dp" />
+
+            <!-- Security -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_security_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_security_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:paddingBottom="24dp" />
+
+            <!-- Supported SSH features -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_supported_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_supported_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:fontFamily="monospace"
+                android:paddingBottom="24dp" />
+
+            <!-- Troubleshooting -->
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_troubleshoot_heading"
+                android:textAppearance="?attr/textAppearanceTitleMedium"
+                android:paddingBottom="8dp" />
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/help_troubleshoot_body"
+                android:textAppearance="?attr/textAppearanceBodyMedium"
+                android:paddingBottom="24dp" />
+
+        </LinearLayout>
+
+    </androidx.core.widget.NestedScrollView>
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>

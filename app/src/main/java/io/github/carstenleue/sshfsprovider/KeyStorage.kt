@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.security.crypto.EncryptedFile
 import androidx.security.crypto.MasterKey
 import java.io.File
+import java.io.OutputStream
 
 /**
  * Stores SSH config and private keys encrypted on-device using
@@ -100,6 +101,18 @@ class KeyStorage(private val context: Context) {
         val f = keyFile(hostAlias)
         if (!f.exists()) return null
         return readEncrypted(f)
+    }
+
+    /**
+     * Returns all stored private keys as a map of `hostAlias → keyBytes`.
+     * Used by the export feature to reassemble the original bundle.
+     */
+    fun loadAllPrivateKeys(): Map<String, ByteArray> {
+        val config = loadConfig() ?: return emptyMap()
+        return config.hosts.mapNotNull { host ->
+            val bytes = loadPrivateKey(host.alias) ?: return@mapNotNull null
+            host.alias to bytes
+        }.toMap()
     }
 
     // -------------------------------------------------------------------------
