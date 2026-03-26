@@ -354,7 +354,7 @@ class ConfigImportActivity : AppCompatActivity() {
             clearButton.isEnabled = false
         } else {
             val lines = config.hosts.joinToString("\n") { host ->
-                "• ${host.alias}  (${host.user}@${host.hostname}:${host.port})"
+                "🖥️ ${host.alias}  (${host.user}@${host.hostname}:${host.port})"
             }
             statusText.text = getString(R.string.status_configured, lines)
             clearButton.isEnabled = true
