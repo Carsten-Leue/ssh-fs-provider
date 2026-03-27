@@ -113,7 +113,7 @@ jobs:
           node-version: "20"
 
       - name: Install semantic-release and plugins
-        run: npm clean-install
+        run: npm install
 
       # Decode the base64-encoded keystore so Gradle can sign the APK.
       # If the secret is absent, the release APK is left unsigned.
