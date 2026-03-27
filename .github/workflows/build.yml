@@ -37,7 +37,17 @@ jobs:
           gradle-version: "8.6"
 
       - name: Build debug APK
-        run: gradle :app:assembleDebug
+        id: gradle_build
+        continue-on-error: true
+        run: gradle :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log
+
+      - name: Report failure details
+        if: steps.gradle_build.outcome == 'failure'
+        run: |
+          awk '/^\* What went wrong:/{p=1} /^\* Try:/{p=0} p{print "::error::" $0}' /tmp/gradle-build.log | head -30
+          grep -E "^\* Task :" /tmp/gradle-build.log | while IFS= read -r l; do echo "::error::$l"; done
+          tail -40 /tmp/gradle-build.log | while IFS= read -r l; do echo "::error::$l"; done
+          exit 1
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
