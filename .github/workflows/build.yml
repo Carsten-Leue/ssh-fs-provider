@@ -38,7 +38,21 @@ jobs:
           cache-disabled: true
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug
+        id: gradle_build
+        continue-on-error: true
+        run: |
+          set +e
+          ./gradlew :app:assembleDebug --info > /tmp/gradle-debug.log 2>&1
+          RC=$?
+          echo "EXIT_CODE=$RC" >> /tmp/gradle-debug.log
+          exit $RC
+
+      - name: Report debug build failure
+        if: steps.gradle_build.outcome == 'failure'
+        run: |
+          grep -E "(FAILURE|FAILED|What went wrong|Execution failed|error:|Error)" /tmp/gradle-debug.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+          tail -30 /tmp/gradle-debug.log | while IFS= read -r l; do echo "::notice::$l"; done
+          exit 1
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
