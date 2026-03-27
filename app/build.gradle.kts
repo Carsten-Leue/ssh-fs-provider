@@ -43,7 +43,7 @@ android {
 
     defaultConfig {
         applicationId = "io.github.carstenleue.sshfsprovider"
-        minSdk = 26
+        minSdk = 28
         targetSdk = 34
         versionCode = appVersionCode
         versionName = appVersionName
