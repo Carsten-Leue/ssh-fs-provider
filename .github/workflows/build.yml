@@ -49,11 +49,14 @@ jobs:
       - name: Report build result
         run: |
           if [ "${{ steps.gradle_build.outcome }}" = "failure" ]; then
-            echo "::error::Gradle build failed. Error summary:"
-            grep -E "(FAILURE:|> Could not|error:|Caused by:|exception)" /tmp/gradle-build.log \
-              | head -30 | while IFS= read -r line; do echo "::error::$line"; done
-            echo "--- Last 30 lines of build log ---"
-            tail -30 /tmp/gradle-build.log
+            echo "::error::Gradle build failed. Failing tasks:"
+            grep -E "^\* Task :" /tmp/gradle-build.log \
+              | while IFS= read -r line; do echo "::error::$line"; done
+            echo "::error::What went wrong:"
+            awk '/^\* What went wrong:/{p=1; next} /^\* Try:/{p=0} p{print "::error::" $0}' \
+              /tmp/gradle-build.log | head -20
+            echo "--- Last 60 lines of build log ---"
+            tail -60 /tmp/gradle-build.log | while IFS= read -r line; do echo "::error::$line"; done
             exit 1
           fi
 
