@@ -32,9 +32,10 @@ jobs:
 
       # Downloads Gradle 8.6 and caches it – no gradle-wrapper.jar required.
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.6"
+          cache-disabled: true
 
       - name: Build debug APK
         run: gradle :app:assembleDebug
@@ -92,9 +93,10 @@ jobs:
           distribution: "temurin"
 
       - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.6"
+          cache-disabled: true
 
       - name: Set up Node.js 20
         uses: actions/setup-node@v4
