@@ -11,16 +11,6 @@
         "prepareCmd": "bash scripts/prepare-release.sh ${nextRelease.version}"
       }
     ],
-    [
-      "@semantic-release/github",
-      {
-        "assets": [
-          {
-            "path": "app/build/outputs/apk/release/ssh-fs-provider-*.apk",
-            "label": "SSH FS Provider v${nextRelease.version}.apk"
-          }
-        ]
-      }
-    ]
+    "@semantic-release/github"
   ]
 }
