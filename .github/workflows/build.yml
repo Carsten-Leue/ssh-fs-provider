@@ -40,6 +40,22 @@ jobs:
       - name: Build debug APK
         run: ./gradlew :app:assembleDebug
 
+      - name: Build release APK (diagnostic)
+        id: release_build
+        continue-on-error: true
+        run: |
+          set +e
+          ./gradlew :app:assembleRelease 2>&1 | tee /tmp/release.log
+          RC=${PIPESTATUS[0]}
+          exit $RC
+
+      - name: Report release build failure
+        if: steps.release_build.outcome == 'failure'
+        run: |
+          grep -A5 "What went wrong\|checkReleaseAarMetadata\|minSdkVersion\|compileSdk\|Dependency\|library request" /tmp/release.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+          echo "::notice::--- tail ---"
+          tail -20 /tmp/release.log | while IFS= read -r l; do echo "::notice::$l"; done
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
