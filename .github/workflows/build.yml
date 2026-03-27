@@ -133,12 +133,25 @@ jobs:
       - name: Run semantic-release
         id: semantic_release
         continue-on-error: true
-        run: npx semantic-release --debug 2>&1 | tee /tmp/semantic-release.log; echo "EXIT_CODE=${PIPESTATUS[0]}" >> /tmp/semantic-release.log
+        run: |
+          set +e
+          npx semantic-release --debug > /tmp/semantic-release.log 2>&1
+          SR_EXIT=$?
+          echo "semantic-release exited with code $SR_EXIT"
+          echo "EXIT_CODE=$SR_EXIT" >> /tmp/semantic-release.log
+          exit $SR_EXIT
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+
+      - name: Surface semantic-release log
+        if: always()
+        run: |
+          echo "::group::semantic-release output (last 100 lines)"
+          tail -100 /tmp/semantic-release.log | while IFS= read -r l; do echo "::notice::$l"; done
+          echo "::endgroup::"
 
       - name: Upload semantic-release log
         if: always()
@@ -148,11 +161,9 @@ jobs:
           path: /tmp/semantic-release.log
           retention-days: 7
 
-      - name: Report semantic-release failure
+      - name: Fail on semantic-release error
         if: steps.semantic_release.outcome == 'failure'
-        run: |
-          tail -80 /tmp/semantic-release.log | while IFS= read -r l; do echo "::error::$l"; done
-          exit 1
+        run: exit 1
 
       # Always remove the keystore file from the runner, even on failure.
       - name: Remove signing key
