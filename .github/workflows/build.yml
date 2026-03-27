@@ -38,30 +38,7 @@ jobs:
           cache-disabled: true
 
       - name: Build debug APK
-        id: gradle_build
-        continue-on-error: true
-        run: ./gradlew :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log
-
-      - name: Report build failure
-        if: steps.gradle_build.outcome == 'failure'
-        run: |
-          awk '/^\* What went wrong:/{p=1} /^\* Try:/{p=0} p{print "::error::" $0}' /tmp/gradle-build.log | head -20
-          grep -E "^\* Task :" /tmp/gradle-build.log | while IFS= read -r l; do echo "::error::$l"; done
-          tail -50 /tmp/gradle-build.log | while IFS= read -r l; do echo "::error::$l"; done
-          exit 1
-
-      - name: Build release APK (unsigned)
-        id: gradle_release_build
-        continue-on-error: true
-        run: ./gradlew :app:assembleRelease --stacktrace 2>&1 | tee /tmp/gradle-release.log
-
-      - name: Report release build failure
-        if: steps.gradle_release_build.outcome == 'failure'
-        run: |
-          awk '/^\* What went wrong:/{p=1} /^\* Try:/{p=0} p{print "::error::" $0}' /tmp/gradle-release.log | head -20
-          grep -E "^\* Task :" /tmp/gradle-release.log | while IFS= read -r l; do echo "::error::$l"; done
-          tail -50 /tmp/gradle-release.log | while IFS= read -r l; do echo "::error::$l"; done
-          exit 1
+        run: ./gradlew :app:assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
@@ -144,38 +121,12 @@ jobs:
       #   publish  → creates GitHub Release with the APK as an asset
       #   success  → @semantic-release/git commits CHANGELOG.md to main
       - name: Run semantic-release
-        id: semantic_release
-        continue-on-error: true
-        run: |
-          set +e
-          npx semantic-release --debug > /tmp/semantic-release.log 2>&1
-          SR_EXIT=$?
-          echo "semantic-release exited with code $SR_EXIT"
-          echo "EXIT_CODE=$SR_EXIT" >> /tmp/semantic-release.log
-          exit $SR_EXIT
+        run: npx semantic-release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SIGNING_STORE_PASSWORD: ${{ secrets.SIGNING_STORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
-
-      - name: Surface semantic-release log
-        if: always()
-        run: |
-          grep -E "(ERR|error|Error|FAILED|failed|Failed|AggregateError|fatal)" /tmp/semantic-release.log | head -20 | while IFS= read -r l; do echo "::error::$l"; done
-          tail -20 /tmp/semantic-release.log | while IFS= read -r l; do echo "::notice::$l"; done
-
-      - name: Upload semantic-release log
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: semantic-release-log-${{ github.sha }}
-          path: /tmp/semantic-release.log
-          retention-days: 7
-
-      - name: Fail on semantic-release error
-        if: steps.semantic_release.outcome == 'failure'
-        run: exit 1
 
       # Always remove the keystore file from the runner, even on failure.
       - name: Remove signing key
