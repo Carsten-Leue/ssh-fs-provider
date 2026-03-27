@@ -38,7 +38,22 @@ jobs:
           cache-disabled: true
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug
+        id: debug_build
+        continue-on-error: true
+        run: |
+          set +e
+          ./gradlew :app:assembleDebug 2>&1 | tee /tmp/debug.log
+          RC=${PIPESTATUS[0]}
+          exit $RC
+
+      - name: Report debug build result
+        if: always()
+        run: |
+          if [ "${{ steps.debug_build.outcome }}" = "failure" ]; then
+            grep -A3 "What went wrong\|checkDebugAarMetadata\|minSdkVersion\|compileSdk\|Dependency\|library request\|FAILED\|Exception" /tmp/debug.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
+            tail -20 /tmp/debug.log | while IFS= read -r l; do echo "::notice::$l"; done
+            exit 1
+          fi
 
       - name: Build release APK (diagnostic)
         id: release_build
@@ -52,8 +67,7 @@ jobs:
       - name: Report release build failure
         if: steps.release_build.outcome == 'failure'
         run: |
-          grep -A5 "What went wrong\|checkReleaseAarMetadata\|minSdkVersion\|compileSdk\|Dependency\|library request" /tmp/release.log | head -40 | while IFS= read -r l; do echo "::error::$l"; done
-          echo "::notice::--- tail ---"
+          grep -A3 "What went wrong\|checkReleaseAarMetadata\|minSdkVersion\|compileSdk\|Dependency\|library request\|FAILED\|Exception" /tmp/release.log | head -30 | while IFS= read -r l; do echo "::error::$l"; done
           tail -20 /tmp/release.log | while IFS= read -r l; do echo "::notice::$l"; done
 
       - name: Upload debug APK
