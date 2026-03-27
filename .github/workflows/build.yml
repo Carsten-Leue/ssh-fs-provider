@@ -37,28 +37,7 @@ jobs:
           gradle-version: "8.6"
 
       - name: Build debug APK
-        id: gradle_build
-        continue-on-error: true
-        run: |
-          set -o pipefail
-          echo "Java: $(java -version 2>&1 | head -1)"
-          echo "Gradle: $(gradle --version 2>&1 | grep '^Gradle')"
-          echo "ANDROID_HOME=${ANDROID_HOME}"
-          gradle :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log
-
-      - name: Report build result
-        run: |
-          if [ "${{ steps.gradle_build.outcome }}" = "failure" ]; then
-            echo "::error::Gradle build failed. Failing tasks:"
-            grep -E "^\* Task :" /tmp/gradle-build.log \
-              | while IFS= read -r line; do echo "::error::$line"; done
-            echo "::error::What went wrong:"
-            awk '/^\* What went wrong:/{p=1; next} /^\* Try:/{p=0} p{print "::error::" $0}' \
-              /tmp/gradle-build.log | head -20
-            echo "--- Last 60 lines of build log ---"
-            tail -60 /tmp/gradle-build.log | while IFS= read -r line; do echo "::error::$line"; done
-            exit 1
-          fi
+        run: gradle :app:assembleDebug
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4

@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -9,7 +11,7 @@ plugins {
 // without any extra setup.
 // ---------------------------------------------------------------------------
 val versionPropsFile = rootProject.file("version.properties")
-val versionProps = java.util.Properties().also { props ->
+val versionProps = Properties().also { props ->
     if (versionPropsFile.exists()) {
         versionPropsFile.inputStream().use { props.load(it) }
     }
