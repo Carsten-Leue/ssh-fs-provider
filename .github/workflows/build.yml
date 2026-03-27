@@ -36,22 +36,26 @@ jobs:
         with:
           gradle-version: "8.6"
 
-      - name: Show environment
-        run: |
-          echo "=== Java ===" && java -version
-          echo "=== Gradle ===" && gradle --version
-          echo "=== Android SDK ===" && echo "ANDROID_HOME=${ANDROID_HOME}" && ls "${ANDROID_HOME}/platforms" 2>/dev/null || echo "No platforms dir"
-
       - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log; exit ${PIPESTATUS[0]}
+        id: gradle_build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          echo "Java: $(java -version 2>&1 | head -1)"
+          echo "Gradle: $(gradle --version 2>&1 | grep '^Gradle')"
+          echo "ANDROID_HOME=${ANDROID_HOME}"
+          gradle :app:assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-build.log
 
-      - name: Upload build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: gradle-build-log-${{ github.sha }}
-          path: /tmp/gradle-build.log
-          retention-days: 7
+      - name: Report build result
+        run: |
+          if [ "${{ steps.gradle_build.outcome }}" = "failure" ]; then
+            echo "::error::Gradle build failed. Error summary:"
+            grep -E "(FAILURE:|> Could not|error:|Caused by:|exception)" /tmp/gradle-build.log \
+              | head -30 | while IFS= read -r line; do echo "::error::$line"; done
+            echo "--- Last 30 lines of build log ---"
+            tail -30 /tmp/gradle-build.log
+            exit 1
+          fi
 
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
