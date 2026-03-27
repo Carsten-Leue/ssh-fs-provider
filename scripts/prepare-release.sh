@@ -27,7 +27,7 @@ printf 'VERSION_NAME=%s\nVERSION_CODE=%d\n' "$VERSION" "$VERSION_CODE" \
 echo "::notice::versionName=${VERSION}  versionCode=${VERSION_CODE}"
 
 # Build the release APK (Gradle reads version.properties).
-gradle :app:assembleRelease
+./gradlew :app:assembleRelease
 
 # Locate the output: signed builds produce app-release.apk,
 # unsigned builds produce app-release-unsigned.apk.
