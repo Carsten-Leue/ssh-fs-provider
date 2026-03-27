@@ -50,6 +50,19 @@ jobs:
           tail -50 /tmp/gradle-build.log | while IFS= read -r l; do echo "::error::$l"; done
           exit 1
 
+      - name: Build release APK (unsigned)
+        id: gradle_release_build
+        continue-on-error: true
+        run: ./gradlew :app:assembleRelease --stacktrace 2>&1 | tee /tmp/gradle-release.log
+
+      - name: Report release build failure
+        if: steps.gradle_release_build.outcome == 'failure'
+        run: |
+          awk '/^\* What went wrong:/{p=1} /^\* Try:/{p=0} p{print "::error::" $0}' /tmp/gradle-release.log | head -20
+          grep -E "^\* Task :" /tmp/gradle-release.log | while IFS= read -r l; do echo "::error::$l"; done
+          tail -50 /tmp/gradle-release.log | while IFS= read -r l; do echo "::error::$l"; done
+          exit 1
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
